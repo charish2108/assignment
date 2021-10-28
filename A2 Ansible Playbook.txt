@@ -1,0 +1,507 @@
+---
+-
+httpd_port: 80
+ntpserver: 92.34.11.6
+repository: https://github.com/charish2108/practicerepo.git
+
+#DB SERVERS -
+
+mysqlservice: mysqld
+mysql_port: 3306
+dbuser: root
+dbname: harishdb
+upassword: harishdb9
+
+WEB SERVERS:
+
+  # Default
+  httpd_config: /etc/httpd/conf/httpd.conf
+  httpd_ssl_config:  /etc/httpd/conf.d/ssl.conf
+  httpd_status_config: /etc/httpd/conf.d/status.conf
+
+  # Main configuration
+  httpd_ServerRoot: /etc/httpd
+  httpd_Listen: 80
+  httpd_ServerAdmin: ec2-user@localhost
+  httpd_ServerTokens: Prod
+  httpd_DocumentRoot: /var/www/html
+
+  httpd_ErrorLog: logs/error_log
+  httpd_AccessLog: logs/access_log
+  httpd_LogLevel: warn
+
+  # mod_ssl
+  httpd_Listen_ssl: 443
+
+  httpd_ErrorLog_ssl: logs/ssl_error_log
+  httpd_AccessLog_ssl: logs/ssl_access_log
+  httpd_LogLevel_ssl: warn
+
+  httpd_SSLCertificateFile:  /etc/ssl/crt/localhost.crt
+  httpd_SSLCertificateKeyFile: /etc/ssl/private/localhost.key
+
+  httpd_SSLProtocol: all -SSLv3 -TLSv1
+  httpd_SSLCipherSuite: ECDHE-RSA-AES128-GCM-SHA256:ECDHE-ECDSA-AES128-GCM-SHA256:ECDHE-RSA-AES256-GCM-SHA384:ECDHE-ECDSA-AES256-GCM-SHA384:DHE-RSA-AES128-GCM-SHA256:DHE-DSS-AES128-GCM-SHA256:kEDH+AESGCM:ECDHE-RSA-AES128-SHA256:ECDHE-ECDSA-AES128-SHA256:ECDHE-RSA-AES128-SHA:ECDHE-ECDSA-AES128-SHA:ECDHE-RSA-AES256-SHA384:ECDHE-ECDSA-AES256-SHA384:ECDHE-RSA-AES256-SHA:ECDHE-ECDSA-AES256-SHA:DHE-RSA-AES128-SHA256:DHE-RSA-AES128-SHA:DHE-DSS-AES128-SHA256:DHE-RSA-AES256-SHA256:DHE-DSS-AES256-SHA:DHE-RSA-AES256-SHA:!aNULL:!eNULL:!EXPORT:!DES:!RC4:!3DES:!MD5:!PSK
+  httpd_SSLHonorCipherOrder: on
+
+  httpd_StatusEnable: false
+  httpd_StatusLocation: /server-status
+  httpd_StatusRequire: host localhost
+  httpd_ExtendedStatus: on
+
+ROLES-- HANDLERS :
+
+- name: restart ntp
+  service: name=ntpd state=restarted
+  become: yes
+
+#TASK----
+
+- name: Install ntp
+  yum: name=ntp state=present
+  become: yes
+  tags: ntp
+
+- name: Install common dependencies
+  yum: name={{ item }} state=installed
+  with_items:
+   - libselinux-python
+   - libsemanage-python
+   - firewalld
+  become: yes
+
+- name: Configure ntp file
+  template: src=ntp.conf.j2 dest=/etc/ntp.conf
+  become: yes
+  tags: ntp
+  notify: restart ntp
+
+- name: Start the ntp service
+  service: name=ntpd state=started enabled=yes
+  become: yes
+  tags: ntp
+
+#TEMPLATES---
+
+driftfile: /var/lib/ntp/drift
+
+restrict: 127.0.0.1 
+restrict: -6 ::1
+
+server: {{ ntpserver }}
+
+includefile: /etc/ntp/crypto/pw
+
+keys: /etc/ntp/keys
+
+
+#DATABASE SERVERS----
+#HANDLERS---
+
+- name: restart mariadb
+  service: name=mariadb state=restarted
+  become: yes
+
+
+TASKS---
+
+- name: Install MariaDB package
+  yum: name={{ item }} state=installed
+  with_items:
+   - mariadb-server
+   - MySQL-python
+  become: yes
+
+- name: Create MariaDB log file
+  file: path=/var/log/mysqld.log state=touch owner=mysql group=mysql mode=0775
+  become: yes
+
+- name: Create MariaDB PID directory
+  file: path=/var/run/mysqld state=directory owner=mysql group=mysql mode=0775
+  become: yes
+
+- name: Start MariaDB Service
+  service: name=mariadb state=started enabled=yes
+  become: yes
+
+- name: Start firewalld
+  service: name=firewalld state=started enabled=yes
+  become: yes
+
+- name: insert firewalld rule
+  firewalld: port={{ mysql_port }}/tcp permanent=true state=enabled immediate=yes
+  become: yes
+
+- name: Create Application Database
+  mysql_db: name={{ dbname }} state=present
+  become: yes
+
+- name: Create Application DB User
+  mysql_user: name={{ dbuser }} password={{ upassword }} priv=*.*:ALL host='%' state=present
+  become: yes
+
+
+
+WEB - HANDLERS--
+
+- name: restart firewalld
+  service: name=firewalld state=restarted
+  become: yes
+
+- name: restart httpd
+  service: name=httpd state=restarted
+  become: yes
+
+
+TASK--- CODE
+
+- name: Copy the code from repository
+  git: repo={{ repository }} dest=/var/www/html/
+  become: yes
+
+- name: Creates the index.php file
+  template: src=index.php.j2 dest=/var/www/html/index.php
+  become: yes
+
+
+INSTALL HTTPD---
+
+- name: Install httpd and php
+  yum: name={{ item }} state=present
+  with_items:
+   - httpd
+   - php
+   - php-mysql
+   - mod_ssl
+  become: yes
+
+- name: Install web role specific dependencies
+  yum: name={{ item }} state=installed
+  with_items:
+   - git
+  become: yes
+
+- name: Start firewalld
+  service: name=firewalld state=started enabled=yes
+  become: yes
+
+- name: insert firewalld rule for httpd
+  firewalld: port={{ httpd_port }}/tcp permanent=true state=enabled immediate=yes
+  become: yes
+
+- name: http service state
+  service: name=httpd state=started enabled=yes
+  become: yes
+
+- name: Creates directory
+  file: path={{ item }} state=directory
+  with_items:
+    - /etc/ssl/crt
+    - /etc/ssl/private
+    - /etc/ssl/csr
+  become: yes
+
+- name: Create self-signed certificate, if configured.
+  command: >
+    openssl req -x509 -nodes -subj '/CN=localhost' -days 365
+    -newkey rsa:4096 -sha256 -keyout /etc/ssl/private/localhost.key -out /etc/ssl/csr/localhost.csr
+    creates=/etc/ssl/crt/localhost.crt
+  become: yes
+
+- name: Install main configuration file
+  template:
+    src: httpd.conf.j2
+    dest: "{{ httpd_config }}"
+    owner: root
+    group: root
+    setype: httpd_config_t
+    mode: '0644'
+  notify: restart httpd
+  become: yes
+
+- name: Install status configuration file
+  template:
+    src: etc_httpd_conf.d_status.conf.j2
+    dest: "{{ httpd_status_config }}"
+    owner: root
+    group: root
+    setype: httpd_config_t
+    mode: '0644'
+  notify: restart httpd
+  when: httpd_StatusEnable
+  become: yes
+
+- name: Install mod_ssl configuration file
+  template:
+    src: ssl.conf.j2
+    dest: "{{ httpd_ssl_config }}"
+    owner: root
+    group: root
+    setype: httpd_config_t
+    mode: '0644'
+  notify: restart httpd
+  become: yes
+
+
+MAIN.YML--
+
+- include: install_httpd.yml
+- include: copy_code.yml
+
+TEMPLATES--
+
+ETC HTTPD--
+
+ExtendedStatus {{ httpd_ExtendedStatus }}
+
+<Location "{{ httpd_StatusLocation }}">
+    SetHandler server-status
+    Require {{ httpd_StatusRequire }}
+</Location>
+
+
+HTTPD CONF-
+
+# Apache HTTP server - main configuration
+
+## General configuration
+ServerRoot {{ httpd_ServerRoot }}
+Listen {{ httpd_Listen }}
+
+Include conf.modules.d/*.conf
+
+User apache
+Group apache
+
+## 'Main' server configuration
+ServerAdmin {{ httpd_ServerAdmin }}
+{% if httpd_ServerName is defined %}
+ServerName {{ httpd_ServerName }}
+{% endif %}
+
+ServerTokens {{ httpd_ServerTokens }}
+
+# Deny general access to filesystem.
+<Directory />
+    AllowOverride none
+    Require all denied
+</Directory>
+
+DocumentRoot {{ httpd_DocumentRoot }}
+
+# Relax access in /var/www
+<Directory "/var/www">
+    AllowOverride None
+    Require all granted
+</Directory>
+
+# Further relax access to the default document root:
+<Directory "{{ httpd_DocumentRoot }}">
+    Options Indexes FollowSymLinks
+    AllowOverride None
+    Require all granted
+</Directory>
+
+# Load index.html if directory is requested
+<IfModule dir_module>
+    DirectoryIndex index.html
+</IfModule>
+
+# Prevent .htaccess and .htpasswd files from being viewed by Web clients.
+<Files ".ht*">
+    Require all denied
+</Files>
+
+# Logging
+ErrorLog "{{ httpd_ErrorLog }}"
+LogLevel {{ httpd_LogLevel }}
+
+<IfModule log_config_module>
+    LogFormat "%h %l %u %t \"%r\" %>s %b \"%{Referer}i\" \"%{User-Agent}i\"" combined
+    LogFormat "%h %l %u %t \"%r\" %>s %b" common
+
+    <IfModule logio_module>
+      # You need to enable mod_logio.c to use %I and %O
+      LogFormat "%h %l %u %t \"%r\" %>s %b \"%{Referer}i\" \"%{User-Agent}i\" %I %O" combinedio
+    </IfModule>
+
+    CustomLog "{{ httpd_AccessLog }}" combined
+</IfModule>
+
+# CGI
+<IfModule alias_module>
+    ScriptAlias /cgi-bin/ "/var/www/cgi-bin/"
+</IfModule>
+
+<Directory "/var/www/cgi-bin">
+    AllowOverride None
+    Options None
+    Require all granted
+</Directory>
+
+# Mime types
+<IfModule mime_module>
+    TypesConfig /etc/mime.types
+
+    AddType application/x-compress .Z
+    AddType application/x-gzip .gz .tgz
+    AddType text/html .shtml
+    AddOutputFilter INCLUDES .shtml
+</IfModule>
+
+AddDefaultCharset UTF-8
+
+<IfModule mime_magic_module>
+    MIMEMagicFile conf/magic
+</IfModule>
+
+EnableSendfile on
+
+# Load other configuration files
+IncludeOptional conf.d/*.conf
+
+
+
+INDEX PHP --
+
+<html>
+ <head>
+  <title>Calm workshop - Ansible Application</title>
+ </head>
+ <body>
+ </br>
+  <a href=http://{{ ansible_default_ipv4.address }}/index.html>Homepage</a>
+ </br>
+<?php
+ Print "Hello, World! This is a web server configured using Ansible and IAM : ";
+ echo exec('hostname');
+ Print  "</BR>";
+?>
+</body>
+</html>
+
+SSL CONF------
+
+# Apache TLS configuration
+#
+# {{ ansible_managed }}
+
+# Listen on port
+Listen {{ httpd_Listen_ssl }} https
+
+## SSL Global Context
+SSLPassPhraseDialog exec:/usr/libexec/httpd-ssl-pass-dialog
+SSLSessionCache         shmcb:/run/httpd/sslcache(512000)
+SSLSessionCacheTimeout  300
+SSLRandomSeed startup file:/dev/urandom  256
+SSLRandomSeed connect builtin
+SSLCryptoDevice builtin
+
+## SSL Virtual Host Context
+<VirtualHost _default_:{{ httpd_Listen_ssl }}>
+
+ErrorLog {{ httpd_ErrorLog_ssl }}
+TransferLog {{ httpd_AccessLog }}
+LogLevel {{ httpd_LogLevel_ssl }}
+
+SSLEngine on
+SSLProtocol {{ httpd_SSLProtocol }}
+SSLCipherSuite {{ httpd_SSLCipherSuite }}
+SSLHonorCipherOrder {{ httpd_SSLHonorCipherOrder }}
+
+# Certificate files
+SSLCertificateFile {{ httpd_SSLCertificateFile }}
+SSLCertificateKeyFile {{ httpd_SSLCertificateKeyFile }}
+{% if httpd_SSLCertificateChainFile is defined %}
+SSLCertificateChainFile {{ httpd_SSLCertificateChainFile }}
+{% endif %}
+{% if httpd_SSLCACertificateFile is defined %}
+SSLCACertificateFile {{ httpd_SSLCACertificateFile }}
+{% endif %}
+
+<Files ~ "\.(cgi|shtml|phtml|php3?)$">
+    SSLOptions +StdEnvVars
+</Files>
+<Directory "/var/www/cgi-bin">
+    SSLOptions +StdEnvVars
+</Directory>
+
+BrowserMatch "MSIE [2-5]" \
+         nokeepalive ssl-unclean-shutdown \
+         downgrade-1.0 force-response-1.0
+
+CustomLog logs/ssl_request_log \
+          "%t %h %{SSL_PROTOCOL}x %{SSL_CIPHER}x \"%r\" %b"
+
+</VirtualHost>
+
+
+SITE.YML---
+
+---
+# This playbook deploys the whole application stack in this site.
+- hosts: all
+
+- name: apply common configuration to all nodes
+  vars_files:
+    - group_vars/all
+  remote_user: ec2-user
+
+  roles:
+    - common
+
+- name: deploy MySQL and configure the databases
+  remote_user: ec2-user
+  vars_files:
+    - group_vars/all
+    - group_vars/dbservers
+
+  roles:
+    - db
+
+- name: configure and deploy the webservers and application code
+  remote_user: ec2-user
+  vars_files:
+    - group_vars/all
+    - group_vars/webservers
+
+  roles:
+    - web
+
+
+JASON TEMPLATE ---
+
+{
+  "variables": {
+    "user": "sysadmin",
+    "aws_access_key": "",
+    "aws_secret_key": ""
+  },
+
+  "builders":[{
+    "type": "amazon-ebs",
+    "access_key": "{{user `aws_access_key`}}",
+    "secret_key": "{{user `aws_secret_key`}}",
+    "region": "us-east-1a",
+    "source_ami": "ami-a6f3t45dc",
+    "instance_type": "t2.micro",
+    "ssh_username": "ec2-user",
+    "ami_name": "My-RHEL-AMI-{{isotime | clean_ami_name}}"
+  }],
+
+  "provisioners": [
+    {
+      "type": "shell",
+      "inline": [
+        "sudo rpm -Uvh https://dl.fedoraproject.org/pub/epel/epel-release-latest-7.noarch.rpm",
+        "sudo yum install -y ansible",
+        "sudo yum install -y python-pip",
+        "sudo pip install PyOpenSSL --upgrade"
+      ]
+    },
+    {
+      "type": "ansible",
+      "playbook_file": "./site.yml"
+    }
+  ]
+}
